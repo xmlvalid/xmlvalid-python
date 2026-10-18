@@ -17,6 +17,7 @@ __all__ = [
     "PlanLimitError",
     "QuotaExceededError",
     "RateLimitedError",
+    "RulesVersionMismatchError",
     "ServerError",
     "SignatureVerificationError",
     "TransportError",
@@ -62,6 +63,17 @@ class NotFoundError(ApiError):
 
 class NotFinishedError(ApiError):
     """409: the report of a validation still running."""
+
+
+class RulesVersionMismatchError(ApiError):
+    """409: a rule set pinned with ``rules_version`` runs another release now. Nothing ran and nothing counted."""
+
+    rule_set: str = ""
+    """The rule set's key: peppol-bis-3-ubl."""
+    pinned: str = ""
+    """The release pinned."""
+    current: str = ""
+    """The release that runs now."""
 
 
 class DocumentTooLargeError(ApiError):

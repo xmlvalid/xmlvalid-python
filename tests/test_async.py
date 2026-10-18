@@ -6,7 +6,7 @@ import re
 import httpx
 import pytest
 
-from xmlvalid import AsyncClient, AuthenticationError
+from xmlvalid import AsyncClient, AuthenticationError, RulesVersionMismatchError
 
 from .conftest import FIXTURES, Api, Reads, validation
 
@@ -45,6 +45,28 @@ def test_a_large_document_is_streamed_and_multipart_works(api: Api) -> None:
     body = api.bodies[1].decode()
     assert re.search(r'name="document"; filename="document.xml"\r\nContent-Type: application/xml\r\n\r\n<a/>', body)
     assert 'name="rules_file"; filename="main.sch"' in body
+
+
+def test_rules_version_and_a_mismatch(api: Api) -> None:
+    api.json(200, validation()).json(200, validation()).json(200, validation())
+    mismatch = {"code": "rules_version_mismatch", "message": "Update the pin.", "rule_set": "peppol-bis-3-ubl"}
+    api.json(409, {"error": {**mismatch, "pinned": "3.0.1", "current": "3.0.21"}})
+
+    async def run() -> RulesVersionMismatchError:
+        async with client(api) as xmlvalid:
+            await xmlvalid.validate(text="<a/>", rules_version="peppol-bis-3-ubl@3.0.21")
+            await xmlvalid.submit(url="https://example.com/a.xml", rules_version=["peppol-bis-3-ubl@3.0.21"])
+            await xmlvalid.submit(text="<a/>", rules=FIXTURES / "main.sch", rules_version=["peppol-bis-3-ubl@3.0.21"])
+            with pytest.raises(RulesVersionMismatchError) as raised:
+                await xmlvalid.submit(text="<a/>", rules_version="peppol-bis-3-ubl@3.0.1")
+            return raised.value
+
+    error = asyncio.run(run())
+
+    assert api.requests[0].url.params.get_list("rules_version[]") == ["peppol-bis-3-ubl@3.0.21"]
+    assert b'"rules_version":["peppol-bis-3-ubl@3.0.21"]' in api.bodies[1]
+    assert re.search(r'name="rules_version\[\]"\r\n\r\npeppol-bis-3-ubl@3.0.21\r\n', api.bodies[2].decode())
+    assert (error.rule_set, error.pinned, error.current) == ("peppol-bis-3-ubl", "3.0.1", "3.0.21")
 
 
 def test_retries_and_errors(api: Api, sleeps: list[float]) -> None:

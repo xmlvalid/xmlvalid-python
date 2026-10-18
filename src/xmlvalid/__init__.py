@@ -13,13 +13,14 @@ from .errors import (
     PlanLimitError,
     QuotaExceededError,
     RateLimitedError,
+    RulesVersionMismatchError,
     ServerError,
     SignatureVerificationError,
     TransportError,
     ValidationTimeoutError,
     XmlvalidError,
 )
-from .models import ArchiveItem, Diagnostic, Event, ReportLink, Result, Schema, Usage, Validation
+from .models import ArchiveItem, Diagnostic, Event, ReportLink, Result, RuleSet, Schema, Usage, Validation
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -40,7 +41,9 @@ __all__ = [
     "RateLimitedError",
     "ReportLink",
     "Result",
+    "RuleSet",
     "Rules",
+    "RulesVersionMismatchError",
     "Schema",
     "ServerError",
     "SignatureVerificationError",

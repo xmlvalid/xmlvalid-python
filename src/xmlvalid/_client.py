@@ -23,6 +23,7 @@ from .errors import (
     PlanLimitError,
     QuotaExceededError,
     RateLimitedError,
+    RulesVersionMismatchError,
     ServerError,
     TransportError,
     ValidationTimeoutError,
@@ -108,7 +109,7 @@ class _Call:
 
     method: str
     path: str
-    params: dict[str, str] = field(default_factory=dict)
+    params: dict[str, str | list[str]] = field(default_factory=dict)
     json: Any = None
     accept: str = "application/json"
     document: _Document | None = None
@@ -148,24 +149,30 @@ class _BaseClient:
         schema_file: str | os.PathLike[str] | None,
         doctype: bool,
         rules: Rules | None,
+        rules_version: str | Sequence[str] | None,
         wait: int,
     ) -> _Call:
         wait = max(0, min(60, wait))
+        pins = [rules_version] if isinstance(rules_version, str) else list(rules_version or [])
         if schema_file is not None or rules is not None:
-            return self._multipart_call(document, schema, schema_file, doctype, rules, wait)
+            return self._multipart_call(document, schema, schema_file, doctype, rules, pins, wait)
         if document.url is not None:
             body: dict[str, Any] = {"url": document.url, "wait": wait}
             if schema is not None:
                 body["schema"] = schema
             if doctype:
                 body["doctype"] = True
+            if pins:
+                body["rules_version"] = pins
             return _Call("POST", "/validations", json=body)
 
-        params = {"wait": str(wait), "name": document.name}
+        params: dict[str, str | list[str]] = {"wait": str(wait), "name": document.name}
         if schema is not None:
             params["schema"] = schema
         if doctype:
             params["doctype"] = "1"
+        if pins:
+            params["rules_version[]"] = pins
         return _Call("POST", "/validations", params=params, document=document)
 
     @staticmethod
@@ -175,6 +182,7 @@ class _BaseClient:
         schema_file: str | os.PathLike[str] | None,
         doctype: bool,
         rules: Rules | None,
+        pins: list[str],
         wait: int,
     ) -> _Call:
         form: dict[str, str | list[str]] = {"wait": str(wait)}
@@ -187,6 +195,8 @@ class _BaseClient:
             form["schema"] = schema
         if doctype:
             form["doctype"] = "1"
+        if pins:
+            form["rules_version[]"] = pins
 
         def part(path: str | os.PathLike[str], filename: str | None = None) -> tuple[str, str | _Document, str]:
             path = os.fspath(path)
@@ -240,7 +250,7 @@ class _BaseClient:
         elif status == 404:
             kind = NotFoundError
         elif status == 409:
-            kind = NotFinishedError
+            kind = RulesVersionMismatchError if code == "rules_version_mismatch" else NotFinishedError
         elif status == 413:
             kind = DocumentTooLargeError
         elif status == 422:
@@ -255,6 +265,10 @@ class _BaseClient:
         if isinstance(exception, RateLimitedError):
             retry_after = response.headers.get("Retry-After", "")
             exception.retry_after = int(retry_after) if retry_after.isdigit() else 0
+        if isinstance(exception, RulesVersionMismatchError):
+            exception.rule_set = str(error.get("rule_set") or "")
+            exception.pinned = str(error.get("pinned") or "")
+            exception.current = str(error.get("current") or "")
         return exception
 
     @staticmethod
@@ -337,6 +351,7 @@ class Client(_BaseClient):
         schema: str | None = None,
         schema_file: str | os.PathLike[str] | None = None,
         rules: Rules | None = None,
+        rules_version: str | Sequence[str] | None = None,
         doctype: bool = False,
         timeout: float | None = None,
     ) -> Validation:
@@ -350,15 +365,18 @@ class Client(_BaseClient):
             an e-invoice names, or None to check well-formedness only
         :param schema_file: An XSD, DTD or RelaxNG file to validate against instead
         :param rules: Your own Schematron, run after the schema check
+        :param rules_version: Rule set releases the check was written against, as ``rule-set@version``
+            (peppol-bis-3-ubl@3.0.21), one or several
         :param doctype: Validate against the DTD the DOCTYPE names
         :param timeout: Seconds to wait in all (default: the client's)
         :raises ValidationTimeoutError: when it is still running after ``timeout``
+        :raises RulesVersionMismatchError: when a pinned rule set runs another release now
         """
         timeout = self._timeout if timeout is None else timeout
         deadline = time.monotonic() + timeout
         validation = self.submit(
             document, text=text, url=url, name=name, schema=schema, schema_file=schema_file,
-            rules=rules, doctype=doctype, wait=int(min(self._wait, max(0, timeout))),
+            rules=rules, rules_version=rules_version, doctype=doctype, wait=int(min(self._wait, max(0, timeout))),
         )  # fmt: skip
         return self.wait_for(validation, timeout=max(0.0, deadline - time.monotonic()))
 
@@ -372,11 +390,14 @@ class Client(_BaseClient):
         schema: str | None = None,
         schema_file: str | os.PathLike[str] | None = None,
         rules: Rules | None = None,
+        rules_version: str | Sequence[str] | None = None,
         doctype: bool = False,
         wait: int = 0,
     ) -> Validation:
         """Queues a validation and returns it at once (or after ``wait`` seconds, if it is done by then)."""
-        call = self._submit_call(_Document(document, text, url, name), schema, schema_file, doctype, rules, wait)
+        call = self._submit_call(
+            _Document(document, text, url, name), schema, schema_file, doctype, rules, rules_version, wait
+        )
         return Validation.from_dict(self._decode(self._send(call)))
 
     def wait_for(self, validation: Validation | str, *, timeout: float | None = None) -> Validation:
@@ -507,6 +528,7 @@ class AsyncClient(_BaseClient):
         schema: str | None = None,
         schema_file: str | os.PathLike[str] | None = None,
         rules: Rules | None = None,
+        rules_version: str | Sequence[str] | None = None,
         doctype: bool = False,
         timeout: float | None = None,
     ) -> Validation:
@@ -515,7 +537,7 @@ class AsyncClient(_BaseClient):
         deadline = time.monotonic() + timeout
         validation = await self.submit(
             document, text=text, url=url, name=name, schema=schema, schema_file=schema_file,
-            rules=rules, doctype=doctype, wait=int(min(self._wait, max(0, timeout))),
+            rules=rules, rules_version=rules_version, doctype=doctype, wait=int(min(self._wait, max(0, timeout))),
         )  # fmt: skip
         return await self.wait_for(validation, timeout=max(0.0, deadline - time.monotonic()))
 
@@ -529,11 +551,14 @@ class AsyncClient(_BaseClient):
         schema: str | None = None,
         schema_file: str | os.PathLike[str] | None = None,
         rules: Rules | None = None,
+        rules_version: str | Sequence[str] | None = None,
         doctype: bool = False,
         wait: int = 0,
     ) -> Validation:
         """Queues a validation and returns it at once; see :meth:`Client.submit`."""
-        call = self._submit_call(_Document(document, text, url, name), schema, schema_file, doctype, rules, wait)
+        call = self._submit_call(
+            _Document(document, text, url, name), schema, schema_file, doctype, rules, rules_version, wait
+        )
         return Validation.from_dict(self._decode(await self._send(call)))
 
     async def wait_for(self, validation: Validation | str, *, timeout: float | None = None) -> Validation:

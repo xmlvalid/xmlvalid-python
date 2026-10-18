@@ -59,6 +59,21 @@ The schema:
 Your own Schematron runs after the schema check: `rules="rules.sch"`, or for rules with
 includes, relative path: file: `rules={"main.sch": "/path/main.sch", "parts/totals.sch": "/path/parts/totals.sch"}`.
 
+Catalog business rules move to new releases. To fail instead of getting findings from rules
+that changed, pin the releases a check was written against:
+
+```python
+xmlvalid.validate(
+    "invoice.xml",
+    schema="peppol-bis-3-invoice",
+    rules_version=["peppol-bis-3-ubl@3.0.21", "en16931-ubl@1.3.16"],  # or one string
+)
+```
+
+When a pinned rule set runs another release, a `RulesVersionMismatchError` is raised before
+anything runs or counts against your quota. `xmlvalid.schemas()` lists each entry's `rule_sets`
+with their keys and releases.
+
 ## Async
 
 ```python
@@ -83,10 +98,15 @@ for error in validation.errors:
     error.rule_url  # the rule's page on xmlvalid.com
     error.help_url  # how to fix this kind of error
 validation.warnings
+for rule_set in validation.rule_sets:  # the business rules that ran, with their releases
+    rule_set.key, rule_set.version  # peppol-bis-3-ubl, 3.0.21
+    rule_set.label  # Peppol BIS Billing 3.0 rules 3.0.21
+    rule_set.pin  # peppol-bis-3-ubl@3.0.21, for rules_version=
 validation.raw  # the API's JSON, as a dict
 ```
 
-For a .zip, `validation.result.items` has one result per document; for a PDF,
+For a .zip, `validation.result.items` has one result per document (each with its own
+`rule_sets`); for a PDF,
 `validation.result.pdf` names the invoice found in it.
 
 ## Long validations, reports and the account
@@ -117,6 +137,7 @@ Every exception extends `xmlvalid.XmlvalidError`. API refusals are `ApiError`s w
 | `PlanLimitError` | 403: not in your plan |
 | `NotFoundError` | 404: no such validation, or it expired (24 hours) |
 | `NotFinishedError` | 409: the report of a validation still running |
+| `RulesVersionMismatchError` | 409: a pinned rule set runs another release; `rule_set`, `pinned`, `current` |
 | `DocumentTooLargeError` | 413: over your plan's size limit |
 | `InvalidRequestError` | 422: unknown schema, a bad URL, … |
 | `QuotaExceededError` | 429: this month's validations are used up |

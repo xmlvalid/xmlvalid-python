@@ -15,6 +15,8 @@ from xmlvalid import (
     PlanLimitError,
     QuotaExceededError,
     RateLimitedError,
+    RuleSet,
+    RulesVersionMismatchError,
     ServerError,
     TransportError,
     Validation,
@@ -47,7 +49,7 @@ def test_a_file_is_sent_as_the_body(client: Client, api: Api) -> None:
     )
     assert request.headers["Authorization"] == "Bearer xv_test"
     assert request.headers["Content-Type"] == "application/xml"
-    assert request.headers["User-Agent"].startswith("xmlvalid-python/1.0.0 Python/")
+    assert request.headers["User-Agent"].startswith("xmlvalid-python/1.1.0 Python/")
     assert api.bodies[0] == (FIXTURES / "invoice.xml").read_bytes()
     assert result.id == "val_1"
     assert result.report_url == "https://xmlvalid.com/api/v1/validations/val_1/report"
@@ -120,6 +122,67 @@ def test_a_single_rules_file(client: Client, api: Api) -> None:
     body = api.bodies[0].decode()
     assert re.search(r'name="url"\r\n\r\nhttps://example.com/a.xml\r\n', body)
     assert 'name="rules_file"; filename="main.sch"' in body
+
+
+def test_rules_version_goes_with_each_kind_of_request(client: Client, api: Api) -> None:
+    api.json(200, validation()).json(200, validation()).json(200, validation())
+
+    client.validate(text="<a/>", schema="peppol-bis-3-invoice", rules_version="peppol-bis-3-ubl@3.0.21")
+    client.validate(url="https://example.com/a.xml", rules_version=["peppol-bis-3-ubl@3.0.21", "en16931-ubl@1.3.16"])
+    client.validate(text="<a/>", rules=FIXTURES / "main.sch", rules_version=("peppol-bis-3-ubl@3.0.21",))
+
+    assert api.requests[0].url.params.get_list("rules_version[]") == ["peppol-bis-3-ubl@3.0.21"]
+    assert api.bodies[1] == (
+        b'{"url":"https://example.com/a.xml","wait":10,'
+        b'"rules_version":["peppol-bis-3-ubl@3.0.21","en16931-ubl@1.3.16"]}'
+    )
+    assert re.search(r'name="rules_version\[\]"\r\n\r\npeppol-bis-3-ubl@3.0.21\r\n', api.bodies[2].decode())
+
+
+def test_no_rules_version_sends_none(client: Client, api: Api) -> None:
+    api.json(200, validation()).json(200, validation())
+
+    client.validate(text="<a/>", rules_version=[])
+    client.validate(url="https://example.com/a.xml")
+
+    assert "rules_version[]" not in api.requests[0].url.params
+    assert b"rules_version" not in api.bodies[1]
+
+
+def test_a_rules_version_mismatch(client: Client, api: Api) -> None:
+    api.json(409, {"error": {
+        "code": "rules_version_mismatch",
+        "message": "Peppol BIS Billing 3.0 rules runs release 3.0.21 now, not 3.0.1. Review what changed and …",
+        "rule_set": "peppol-bis-3-ubl", "pinned": "3.0.1", "current": "3.0.21",
+    }})  # fmt: skip
+
+    with pytest.raises(RulesVersionMismatchError, match=r"runs release 3\.0\.21 now") as raised:
+        client.validate(text="<a/>", schema="peppol-bis-3-invoice", rules_version="peppol-bis-3-ubl@3.0.1")
+
+    assert isinstance(raised.value, ApiError) and not isinstance(raised.value, NotFinishedError)
+    assert (raised.value.status_code, raised.value.error_code) == (409, "rules_version_mismatch")
+    assert (raised.value.rule_set, raised.value.pinned, raised.value.current) == ("peppol-bis-3-ubl", "3.0.1", "3.0.21")
+
+
+def test_rule_sets_of_a_validation_and_its_archive_items() -> None:
+    peppol = {"key": "peppol-bis-3-ubl", "name": "Peppol BIS Billing 3.0 rules", "version": "3.0.21"}
+    en16931 = {"key": "en16931-ubl", "name": "EN 16931 rules 1.3.16 (UBL)", "version": "1.3.16"}
+    data = validation()
+    data["rule_sets"] = [en16931, peppol]
+    data["result"]["items"] = [{"name": "a.xml", "outcome": "valid", "valid": True, "rule_sets": [peppol]}, {}]
+
+    result = Validation.from_dict(data)
+
+    assert [str(rule_set) for rule_set in result.rule_sets] == [
+        "EN 16931 rules 1.3.16 (UBL)",
+        "Peppol BIS Billing 3.0 rules 3.0.21",
+    ]
+    assert result.rule_sets[1] == RuleSet("peppol-bis-3-ubl", "Peppol BIS Billing 3.0 rules", "3.0.21")
+    assert result.rule_sets[1].pin == "peppol-bis-3-ubl@3.0.21"
+    assert result.rule_sets[0].label == "EN 16931 rules 1.3.16 (UBL)"
+    assert result.result is not None
+    assert [item.rule_sets for item in result.result.items] == [[result.rule_sets[1]], []]
+    assert Validation.from_dict(validation()).rule_sets == []
 
 
 def test_it_polls_until_finished(client: Client, api: Api, sleeps: list[float]) -> None:
@@ -261,6 +324,7 @@ def test_usage_and_schemas(client: Client, api: Api) -> None:
         "catalog": [{
             "schema": "peppol-bis-3-invoice", "name": "Peppol BIS Billing 3.0 Invoice", "kind": "xsd",
             "namespace": None, "version": "3.0.20", "rules": ["EN 16931"],
+            "rule_sets": [{"key": "en16931-ubl", "name": "EN 16931 rules 1.3.16 (UBL)", "version": "1.3.16"}],
         }],
     })  # fmt: skip
 
@@ -272,6 +336,8 @@ def test_usage_and_schemas(client: Client, api: Api) -> None:
         ("my-12", True, []),
         ("peppol-bis-3-invoice", False, ["EN 16931"]),
     ]
+    assert schemas[0].rule_sets == []
+    assert [rule_set.pin for rule_set in schemas[1].rule_sets] == ["en16931-ubl@1.3.16"]
 
 
 def test_the_key_and_the_document_are_checked(monkeypatch: pytest.MonkeyPatch) -> None:

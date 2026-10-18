@@ -12,6 +12,7 @@ __all__ = [
     "Event",
     "ReportLink",
     "Result",
+    "RuleSet",
     "Schema",
     "Usage",
     "Validation",
@@ -57,6 +58,38 @@ def _date(data: dict[str, Any], key: str) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+@dataclass(frozen=True)
+class RuleSet:
+    """A set of business rules a catalog schema runs, at the release in use."""
+
+    key: str
+    """What ``rules_version`` pins: peppol-bis-3-ubl."""
+    name: str
+    version: str
+    """The release: 3.0.21."""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RuleSet:
+        return cls(key=_str(data, "key"), name=_str(data, "name"), version=_str(data, "version"))
+
+    @property
+    def pin(self) -> str:
+        """The pin for this release: ``peppol-bis-3-ubl@3.0.21``."""
+        return f"{self.key}@{self.version}"
+
+    @property
+    def label(self) -> str:
+        """Name and release, once: ``Peppol BIS Billing 3.0 rules 3.0.21``, ``EN 16931 rules 1.3.16 (UBL)``."""
+        return self.name if self.version in self.name else f"{self.name} {self.version}"
+
+    def __str__(self) -> str:
+        return self.label
+
+
+def _rule_sets(data: dict[str, Any]) -> list[RuleSet]:
+    return [RuleSet.from_dict(item) for item in _objects(data, "rule_sets")]
 
 
 @dataclass(frozen=True)
@@ -122,6 +155,8 @@ class ArchiveItem:
     warnings: list[Diagnostic]
     note: str | None = None
     """Why a skipped document was left unchecked."""
+    rule_sets: list[RuleSet] = field(default_factory=list)
+    """The business rules its schema ran, with their releases."""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ArchiveItem:
@@ -135,6 +170,7 @@ class ArchiveItem:
             errors=[Diagnostic.from_dict(item) for item in _objects(data, "errors")],
             warnings=[Diagnostic.from_dict(item) for item in _objects(data, "warnings")],
             note=_opt_str(data, "note"),
+            rule_sets=_rule_sets(data),
         )
 
 
@@ -211,6 +247,8 @@ class Validation:
     """What went wrong on xmlvalid's side when the status is failed."""
     report_url: str | None
     """The result as an HTML page, once finished (needs the API key)."""
+    rule_sets: list[RuleSet] = field(default_factory=list)
+    """The business rules the schema runs, with their releases (empty without any)."""
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -227,6 +265,7 @@ class Validation:
             result=Result.from_dict(result) if result is not None else None,
             error=_opt_str(data, "error"),
             report_url=_opt_str(_object(data, "links") or {}, "report"),
+            rule_sets=_rule_sets(data),
             raw=data,
         )
 
@@ -299,6 +338,8 @@ class Schema:
     version: str | None = None
     rules: list[str] = field(default_factory=list)
     """Schematron rule sets run after the schema check, in order."""
+    rule_sets: list[RuleSet] = field(default_factory=list)
+    """The same rule sets with their keys and releases, for ``rules_version``."""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], saved: bool) -> Schema:
@@ -311,6 +352,7 @@ class Schema:
             saved=saved,
             version=_opt_str(data, "version"),
             rules=[rule for rule in rules if isinstance(rule, str)] if isinstance(rules, list) else [],
+            rule_sets=_rule_sets(data),
         )
 
 
