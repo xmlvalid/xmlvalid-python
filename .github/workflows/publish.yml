@@ -1,0 +1,32 @@
+# Publishes the package to PyPI when a vX.Y.Z tag is pushed.
+#
+# One-time setup, with Trusted Publishing (no API token stored anywhere):
+#   pypi.org → Your projects → Publishing → Add a new pending publisher:
+#     PyPI project name: xmlvalid
+#     Owner: xmlvalid    Repository: xmlvalid-python
+#     Workflow name: publish.yml    Environment: pypi
+#   and create the "pypi" environment under the repository's Settings → Environments.
+#
+# Releasing: bump src/xmlvalid/_version.py and CHANGELOG.md, commit, then
+#   git tag v1.0.1 && git push origin v1.0.1
+
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: The tag matches the version
+        run: test "v$(uv run python -c 'import xmlvalid; print(xmlvalid.__version__)')" = "${GITHUB_REF_NAME}"
+      - run: uv run pytest
+      - run: uv build
+      - run: uv publish --trusted-publishing always

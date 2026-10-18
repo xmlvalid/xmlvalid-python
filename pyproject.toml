@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xmlvalid"
+dynamic = ["version"]
+description = "Python client for the xmlvalid API: validate XML and e-invoices (Peppol, XRechnung, Factur-X, UBL, CII) against XSD, DTD, RelaxNG and Schematron business rules"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "xmlvalid", email = "support@xmlvalid.com" }]
+keywords = ["xml", "validation", "xsd", "schematron", "e-invoice", "peppol", "xrechnung", "factur-x", "ubl", "en16931"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Text Processing :: Markup :: XML",
+    "Typing :: Typed",
+]
+dependencies = ["httpx>=0.27,<1"]
+
+[project.urls]
+Homepage = "https://xmlvalid.com"
+Documentation = "https://xmlvalid.com/docs/api"
+Source = "https://github.com/xmlvalid/xmlvalid-python"
+Issues = "https://github.com/xmlvalid/xmlvalid-python/issues"
+Changelog = "https://github.com/xmlvalid/xmlvalid-python/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = ["pytest>=8", "mypy>=1.13", "ruff>=0.8"]
+
+[tool.hatch.version]
+path = "src/xmlvalid/_version.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
