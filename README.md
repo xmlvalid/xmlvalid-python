@@ -94,6 +94,7 @@ validation.result.errors_total  # all of them; the first 500 are listed
 for error in validation.errors:
     error.line, error.column, error.level, error.type  # xsd, schematron, …
     error.rule  # BR-CO-16 for a business rule
+    error.path  # where it fired: /Invoice/cac:LegalMonetaryTotal
     error.message
     error.rule_url  # the rule's page on xmlvalid.com
     error.help_url  # how to fix this kind of error
@@ -102,6 +103,8 @@ for rule_set in validation.rule_sets:  # the business rules that ran, with their
     rule_set.key, rule_set.version  # peppol-bis-3-ubl, 3.0.21
     rule_set.label  # Peppol BIS Billing 3.0 rules 3.0.21
     rule_set.pin  # peppol-bis-3-ubl@3.0.21, for rules_version=
+validation.result.sha256  # SHA-256 of the file as sent
+validation.result.engine  # Engine(xmlvalid='0.1.0', libxml2='2.13.9', saxonjs='2.7.0')
 validation.raw  # the API's JSON, as a dict
 ```
 

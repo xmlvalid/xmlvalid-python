@@ -9,6 +9,7 @@ from typing import Any
 __all__ = [
     "ArchiveItem",
     "Diagnostic",
+    "Engine",
     "Event",
     "ReportLink",
     "Result",
@@ -107,6 +108,9 @@ class Diagnostic:
     message: str
     rule: str | None = None
     """The business rule that failed (BR-CO-15, PEPPOL-EN16931-R001) or the PDF check (PDF-AF)."""
+    path: str | None = None
+    """Where a business rule fired, as an XPath with the document's prefixes:
+    ``/Invoice/cac:InvoiceLine[2]/cbc:LineExtensionAmount``."""
     message_en: str | None = None
     """The message in English, for a rule its publisher wrote in another language."""
     help_url: str | None = None
@@ -123,6 +127,7 @@ class Diagnostic:
             type=_str(data, "type"),
             message=_str(data, "message"),
             rule=_opt_str(data, "rule"),
+            path=_opt_str(data, "path"),
             message_en=_opt_str(data, "message_en"),
             help_url=_opt_str(data, "help_url"),
             rule_url=_opt_str(data, "rule_url"),
@@ -137,6 +142,24 @@ class Diagnostic:
         line = f"Line {self.line}: " if self.line > 0 else ""
         rule = f"[{self.rule}] " if self.rule is not None else ""
         return f"{line}{rule}{self.message_en or self.message}"
+
+
+@dataclass(frozen=True)
+class Engine:
+    """What checked a document, for an audit trail."""
+
+    xmlvalid: str
+    """The validation engine's version."""
+    libxml2: str
+    """The libxml2 of the schema check: 2.13.9."""
+    saxonjs: str | None = None
+    """The SaxonJS of the business rules; None when none ran."""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> Engine | None:
+        if data is None or _opt_str(data, "libxml2") is None:
+            return None
+        return cls(xmlvalid=_str(data, "xmlvalid"), libxml2=_str(data, "libxml2"), saxonjs=_opt_str(data, "saxonjs"))
 
 
 @dataclass(frozen=True)
@@ -157,6 +180,9 @@ class ArchiveItem:
     """Why a skipped document was left unchecked."""
     rule_sets: list[RuleSet] = field(default_factory=list)
     """The business rules its schema ran, with their releases."""
+    sha256: str | None = None
+    """SHA-256 of the document (of the PDF for a PDF invoice), in hex."""
+    engine: Engine | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ArchiveItem:
@@ -171,6 +197,8 @@ class ArchiveItem:
             warnings=[Diagnostic.from_dict(item) for item in _objects(data, "warnings")],
             note=_opt_str(data, "note"),
             rule_sets=_rule_sets(data),
+            sha256=_opt_str(data, "sha256"),
+            engine=Engine.from_dict(_object(data, "engine")),
         )
 
 
@@ -198,6 +226,10 @@ class Result:
     """For an archive: total, passed, failed, skipped."""
     items: list[ArchiveItem] = field(default_factory=list)
     """For an archive: one result per document."""
+    sha256: str | None = None
+    """SHA-256 of the file as sent (the PDF, the archive), in hex."""
+    engine: Engine | None = None
+    """What checked it: the libxml2 and, when business rules ran, the SaxonJS."""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Result:
@@ -214,6 +246,8 @@ class Result:
             pdf=_object(data, "pdf"),
             documents=_object(data, "documents"),
             items=[ArchiveItem.from_dict(item) for item in _objects(data, "items")],
+            sha256=_opt_str(data, "sha256"),
+            engine=Engine.from_dict(_object(data, "engine")),
         )
 
     @property

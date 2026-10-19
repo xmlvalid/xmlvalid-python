@@ -20,7 +20,7 @@ from .errors import (
     ValidationTimeoutError,
     XmlvalidError,
 )
-from .models import ArchiveItem, Diagnostic, Event, ReportLink, Result, RuleSet, Schema, Usage, Validation
+from .models import ArchiveItem, Diagnostic, Engine, Event, ReportLink, Result, RuleSet, Schema, Usage, Validation
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -32,6 +32,7 @@ __all__ = [
     "Diagnostic",
     "DocumentInput",
     "DocumentTooLargeError",
+    "Engine",
     "Event",
     "InvalidRequestError",
     "NotFinishedError",

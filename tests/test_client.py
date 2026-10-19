@@ -10,6 +10,7 @@ from xmlvalid import (
     ApiError,
     AuthenticationError,
     Client,
+    Engine,
     InvalidRequestError,
     NotFinishedError,
     PlanLimitError,
@@ -49,7 +50,7 @@ def test_a_file_is_sent_as_the_body(client: Client, api: Api) -> None:
     )
     assert request.headers["Authorization"] == "Bearer xv_test"
     assert request.headers["Content-Type"] == "application/xml"
-    assert request.headers["User-Agent"].startswith("xmlvalid-python/1.1.0 Python/")
+    assert request.headers["User-Agent"].startswith("xmlvalid-python/1.2.0 Python/")
     assert api.bodies[0] == (FIXTURES / "invoice.xml").read_bytes()
     assert result.id == "val_1"
     assert result.report_url == "https://xmlvalid.com/api/v1/validations/val_1/report"
@@ -183,6 +184,35 @@ def test_rule_sets_of_a_validation_and_its_archive_items() -> None:
     assert result.result is not None
     assert [item.rule_sets for item in result.result.items] == [[result.rule_sets[1]], []]
     assert Validation.from_dict(validation()).rule_sets == []
+
+
+def test_where_a_rule_fired_the_documents_hash_and_the_engine() -> None:
+    error = {
+        "line": 139,
+        "column": 0,
+        "level": "error",
+        "type": "schematron",
+        "rule": "BR-CO-16",
+        "path": "/Invoice/cac:LegalMonetaryTotal",
+        "message": "Amount due",
+    }
+    data = validation(valid=False, errors=[error, {**error, "path": None, "rule": None, "type": "xsd"}])
+    engine = {"xmlvalid": "0.1.0", "libxml2": "2.13.9", "saxonjs": "2.7.0"}
+    item = {"name": "a.xml", "outcome": "valid", "sha256": "cd" * 32, "engine": {**engine, "saxonjs": None}}
+    data["result"] |= {"sha256": "ab" * 32, "engine": engine, "items": [item]}
+
+    result = Validation.from_dict(data).result
+
+    assert result is not None
+    assert [e.path for e in result.errors] == ["/Invoice/cac:LegalMonetaryTotal", None]
+    assert result.sha256 == "ab" * 32
+    assert result.engine == Engine("0.1.0", "2.13.9", "2.7.0")
+    assert result.items[0].sha256 == "cd" * 32
+    assert result.items[0].engine == Engine("0.1.0", "2.13.9", None)
+    # Results kept from before the API named them.
+    old = Validation.from_dict(validation()).result
+    assert old is not None
+    assert (old.sha256, old.engine) == (None, None)
 
 
 def test_it_polls_until_finished(client: Client, api: Api, sleeps: list[float]) -> None:
