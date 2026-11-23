@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 
 import httpx
@@ -50,7 +51,7 @@ def test_a_file_is_sent_as_the_body(client: Client, api: Api) -> None:
     )
     assert request.headers["Authorization"] == "Bearer xv_test"
     assert request.headers["Content-Type"] == "application/xml"
-    assert request.headers["User-Agent"].startswith("xmlvalid-python/1.2.0 Python/")
+    assert request.headers["User-Agent"].startswith("xmlvalid-python/1.3.0 Python/")
     assert api.bodies[0] == (FIXTURES / "invoice.xml").read_bytes()
     assert result.id == "val_1"
     assert result.report_url == "https://xmlvalid.com/api/v1/validations/val_1/report"
@@ -284,6 +285,58 @@ def test_quota_is_not_retried(client: Client, api: Api, sleeps: list[float]) -> 
     assert sleeps == []
 
 
+def test_a_test_keys_day_is_not_retried(client: Client, api: Api, sleeps: list[float]) -> None:
+    api.json(429, {"error": {"code": "test_quota_exceeded", "message": "Test keys run 50 validations a day."}})
+
+    with pytest.raises(QuotaExceededError, match="50 validations a day") as raised:
+        client.validate(text="<a/>")
+    assert raised.value.error_code == "test_quota_exceeded"
+    assert sleeps == []
+
+
+def test_fix_sends_its_values_and_reads_what_it_did(client: Client, api: Api) -> None:
+    body = validation(valid=False)
+    body["test"] = True
+    body["links"]["fixed"] = "https://xmlvalid.com/api/v1/validations/val_1/fixed"
+    body["result"]["fix"] = {
+        "status": "fixed",
+        "reason": None,
+        "changes": [{"rule": "BR-CL-04", "text": "cbc:DocumentCurrencyCode was eur: EUR"}],
+        "asks": [{"key": "unit:Stk", "rule": "BR-CL-23", "label": "Unit Stk", "kind": "unit", "answered": False,
+                  "options": ["H87", "C62"], "suggested": None, "hint": None}],
+        "problems": [{"key": "buyer-reference", "text": "Not a Leitweg-ID"}],
+        "result": {"valid": True, "outcome": "valid", "errors_total": 0, "warnings_total": 0,
+                   "errors": [], "warnings": []},
+    }  # fmt: skip
+    api.json(200, body)
+    api.raw(200, "<Invoice/>", {"Content-Type": "application/xml"})
+
+    result = client.validate(text="<Invoice/>", schema="auto", fix=True, fix_values={"buyer-reference": "04011000-1"})
+    fixed = client.fixed(result)
+
+    assert "fix=1" in str(api.requests[0].url)
+    assert "fix_values%5Bbuyer-reference%5D=04011000-1" in str(api.requests[0].url)
+    assert str(api.requests[1].url) == "https://xmlvalid.com/api/v1/validations/val_1/fixed"
+    assert fixed == b"<Invoice/>"
+    assert result.test is True
+    assert result.fixed_url == "https://xmlvalid.com/api/v1/validations/val_1/fixed"
+    fix = result.result.fix if result.result else None
+    assert fix is not None and fix.is_fixed
+    assert [str(change) for change in fix.changes] == ["[BR-CL-04] cbc:DocumentCurrencyCode was eur: EUR"]
+    assert fix.asks[0].key == "unit:Stk" and fix.asks[0].options == ["H87", "C62"]
+    assert fix.problems[0].text == "Not a Leitweg-ID"
+    assert fix.result is not None and fix.result.valid
+
+
+def test_fix_by_url_goes_in_the_json(client: Client, api: Api) -> None:
+    api.json(200, validation())
+
+    client.validate(url="https://example.com/a.xml", fix=True, fix_values={"billing-mode": "B1"})
+
+    sent = json.loads(api.bodies[0])
+    assert (sent["fix"], sent["fix_values"]) == (True, {"billing-mode": "B1"})
+
+
 @pytest.mark.parametrize(
     ("status", "kind"),
     [(401, AuthenticationError), (403, PlanLimitError), (409, NotFinishedError), (418, ApiError)],
@@ -347,10 +400,11 @@ def test_usage_and_schemas(client: Client, api: Api) -> None:
         "plan": "pro",
         "period": {"start": "2026-10-01T00:00:00+00:00", "reset_at": "2026-11-01T00:00:00+00:00"},
         "validations": {"used": 3, "limit": 10000},
+        "test_validations": {"used": 7, "limit": 50, "reset_at": "2026-10-19T00:00:00+00:00"},
         "limits": {"max_file_bytes": 524288000, "requests_per_minute": 120},
     })  # fmt: skip
     api.json(200, {
-        "saved": [{"schema": "my-12", "name": "order.xsd", "kind": "xsd", "namespace": "urn:example:order"}],
+        "saved": [{"schema": "@orders-v3", "name": "order.xsd", "kind": "xsd", "namespace": "urn:example:order"}],
         "catalog": [{
             "schema": "peppol-bis-3-invoice", "name": "Peppol BIS Billing 3.0 Invoice", "kind": "xsd",
             "namespace": None, "version": "3.0.20", "rules": ["EN 16931"],
@@ -362,8 +416,10 @@ def test_usage_and_schemas(client: Client, api: Api) -> None:
     schemas = client.schemas()
 
     assert (usage.plan, usage.remaining, usage.requests_per_minute) == ("pro", 9997, 120)
+    assert (usage.test_used, usage.test_limit) == (7, 50)
+    assert usage.test_reset_at is not None and usage.test_reset_at.day == 19
     assert [(schema.schema, schema.saved, schema.rules) for schema in schemas] == [
-        ("my-12", True, []),
+        ("@orders-v3", True, []),
         ("peppol-bis-3-invoice", False, ["EN 16931"]),
     ]
     assert schemas[0].rule_sets == []

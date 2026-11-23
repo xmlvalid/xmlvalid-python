@@ -151,11 +151,16 @@ class _BaseClient:
         rules: Rules | None,
         rules_version: str | Sequence[str] | None,
         wait: int,
+        fix: bool = False,
+        fix_values: Mapping[str, str] | None = None,
     ) -> _Call:
         wait = max(0, min(60, wait))
         pins = [rules_version] if isinstance(rules_version, str) else list(rules_version or [])
+        answers = {str(key): str(value) for key, value in (fix_values or {}).items()}
         if schema_file is not None or rules is not None:
-            return self._multipart_call(document, schema, schema_file, doctype, rules, pins, wait)
+            call = self._multipart_call(document, schema, schema_file, doctype, rules, pins, wait)
+            call.form = {**(call.form or {}), **self._fix_fields(fix, answers)}
+            return call
         if document.url is not None:
             body: dict[str, Any] = {"url": document.url, "wait": wait}
             if schema is not None:
@@ -164,6 +169,10 @@ class _BaseClient:
                 body["doctype"] = True
             if pins:
                 body["rules_version"] = pins
+            if fix:
+                body["fix"] = True
+                if answers:
+                    body["fix_values"] = answers
             return _Call("POST", "/validations", json=body)
 
         params: dict[str, str | list[str]] = {"wait": str(wait), "name": document.name}
@@ -173,7 +182,15 @@ class _BaseClient:
             params["doctype"] = "1"
         if pins:
             params["rules_version[]"] = pins
+        params.update(self._fix_fields(fix, answers))
         return _Call("POST", "/validations", params=params, document=document)
+
+    @staticmethod
+    def _fix_fields(fix: bool, answers: dict[str, str]) -> dict[str, str | list[str]]:
+        """fix=1 and fix_values[key]=value, as query or form fields."""
+        if not fix:
+            return {}
+        return {"fix": "1", **{f"fix_values[{key}]": value for key, value in answers.items()}}
 
     @staticmethod
     def _multipart_call(
@@ -256,7 +273,8 @@ class _BaseClient:
         elif status == 422:
             kind = InvalidRequestError
         elif status == 429:
-            kind = QuotaExceededError if code == "quota_exceeded" else RateLimitedError
+            # quota_exceeded for the month, test_quota_exceeded for a test key's day: neither is retried.
+            kind = QuotaExceededError if code in ("quota_exceeded", "test_quota_exceeded") else RateLimitedError
         elif status >= 500:
             kind = ServerError
 
@@ -310,7 +328,7 @@ class Client(_BaseClient):
         for error in validation.errors:
             print(error)  # Line 139: [BR-CO-16] Amount due for payment …
 
-    :param api_key: An API key (xv_…) from https://xmlvalid.com/dashboard/api
+    :param api_key: An API key (xv_…, or a test key xv_test_… outside the monthly quota) from https://xmlvalid.com/dashboard/api
     :param timeout: Seconds :meth:`validate` waits for a result in all
     :param wait: Seconds the API holds a new validation's request before answering with its status (0-60)
     :param max_retries: Times a request refused with 429 rate_limited is retried, after Retry-After
@@ -353,6 +371,8 @@ class Client(_BaseClient):
         rules: Rules | None = None,
         rules_version: str | Sequence[str] | None = None,
         doctype: bool = False,
+        fix: bool = False,
+        fix_values: Mapping[str, str] | None = None,
         timeout: float | None = None,
     ) -> Validation:
         """Validates a document and waits for the result.
@@ -361,13 +381,16 @@ class Client(_BaseClient):
         :param text: The document as a string, instead
         :param url: A public http(s) address xmlvalid downloads itself, instead
         :param name: The document's name in results and reports (default: the file's)
-        :param schema: A catalog slug (peppol-bis-3-invoice), a saved schema (my-12), "auto" for the profile
+        :param schema: A catalog slug (peppol-bis-3-invoice), a saved schema (@orders-v3), "auto" for the profile
             an e-invoice names, or None to check well-formedness only
         :param schema_file: An XSD, DTD or RelaxNG file to validate against instead
         :param rules: Your own Schematron, run after the schema check
         :param rules_version: Rule set releases the check was written against, as ``rule-set@version``
             (peppol-bis-3-ubl@3.0.21), one or several
         :param doctype: Validate against the DTD the DOCTYPE names
+        :param fix: Fix the invoice as the validator does and check it again (Pro): see ``result.fix``,
+            and :meth:`fixed` for the fixed document
+        :param fix_values: Answers to ``result.fix.asks`` by their key ({"buyer-reference": "04011000-12346-97"})
         :param timeout: Seconds to wait in all (default: the client's)
         :raises ValidationTimeoutError: when it is still running after ``timeout``
         :raises RulesVersionMismatchError: when a pinned rule set runs another release now
@@ -376,7 +399,8 @@ class Client(_BaseClient):
         deadline = time.monotonic() + timeout
         validation = self.submit(
             document, text=text, url=url, name=name, schema=schema, schema_file=schema_file,
-            rules=rules, rules_version=rules_version, doctype=doctype, wait=int(min(self._wait, max(0, timeout))),
+            rules=rules, rules_version=rules_version, doctype=doctype, fix=fix, fix_values=fix_values,
+            wait=int(min(self._wait, max(0, timeout))),
         )  # fmt: skip
         return self.wait_for(validation, timeout=max(0.0, deadline - time.monotonic()))
 
@@ -392,11 +416,21 @@ class Client(_BaseClient):
         rules: Rules | None = None,
         rules_version: str | Sequence[str] | None = None,
         doctype: bool = False,
+        fix: bool = False,
+        fix_values: Mapping[str, str] | None = None,
         wait: int = 0,
     ) -> Validation:
         """Queues a validation and returns it at once (or after ``wait`` seconds, if it is done by then)."""
         call = self._submit_call(
-            _Document(document, text, url, name), schema, schema_file, doctype, rules, rules_version, wait
+            _Document(document, text, url, name),
+            schema,
+            schema_file,
+            doctype,
+            rules,
+            rules_version,
+            wait,
+            fix,
+            fix_values,
         )
         return Validation.from_dict(self._decode(self._send(call)))
 
@@ -430,13 +464,20 @@ class Client(_BaseClient):
         """The result as an HTML page."""
         return self._send(_Call("GET", self._path(self._id(validation), "/report"), accept="text/html")).text
 
+    def fixed(self, validation: Validation | str) -> bytes:
+        """The document a run with ``fix=True`` fixed, for as long as its result is kept.
+
+        :raises NotFoundError: when nothing was fixed (``not_fixed``) or the validation expired
+        """
+        return self._send(_Call("GET", self._path(self._id(validation), "/fixed"), accept="application/xml")).content
+
     def share(self, validations: Sequence[Validation | str]) -> ReportLink:
         """A public link to the report of one or more validations, for 30 days (Pro)."""
         body = {"validations": [self._id(validation) for validation in validations]}
         return ReportLink.from_dict(self._decode(self._send(_Call("POST", "/reports", json=body))))
 
     def usage(self) -> Usage:
-        """This month's validations and the plan's limits."""
+        """This month's validations, today's test key validations and the plan's limits."""
         return Usage.from_dict(self._decode(self._send(_Call("GET", "/usage"))))
 
     def schemas(self) -> list[Schema]:
@@ -530,6 +571,8 @@ class AsyncClient(_BaseClient):
         rules: Rules | None = None,
         rules_version: str | Sequence[str] | None = None,
         doctype: bool = False,
+        fix: bool = False,
+        fix_values: Mapping[str, str] | None = None,
         timeout: float | None = None,
     ) -> Validation:
         """Validates a document and waits for the result; see :meth:`Client.validate`."""
@@ -537,7 +580,8 @@ class AsyncClient(_BaseClient):
         deadline = time.monotonic() + timeout
         validation = await self.submit(
             document, text=text, url=url, name=name, schema=schema, schema_file=schema_file,
-            rules=rules, rules_version=rules_version, doctype=doctype, wait=int(min(self._wait, max(0, timeout))),
+            rules=rules, rules_version=rules_version, doctype=doctype, fix=fix, fix_values=fix_values,
+            wait=int(min(self._wait, max(0, timeout))),
         )  # fmt: skip
         return await self.wait_for(validation, timeout=max(0.0, deadline - time.monotonic()))
 
@@ -553,11 +597,21 @@ class AsyncClient(_BaseClient):
         rules: Rules | None = None,
         rules_version: str | Sequence[str] | None = None,
         doctype: bool = False,
+        fix: bool = False,
+        fix_values: Mapping[str, str] | None = None,
         wait: int = 0,
     ) -> Validation:
         """Queues a validation and returns it at once; see :meth:`Client.submit`."""
         call = self._submit_call(
-            _Document(document, text, url, name), schema, schema_file, doctype, rules, rules_version, wait
+            _Document(document, text, url, name),
+            schema,
+            schema_file,
+            doctype,
+            rules,
+            rules_version,
+            wait,
+            fix,
+            fix_values,
         )
         return Validation.from_dict(self._decode(await self._send(call)))
 
@@ -584,6 +638,11 @@ class AsyncClient(_BaseClient):
 
     async def report(self, validation: Validation | str) -> str:
         return (await self._send(_Call("GET", self._path(self._id(validation), "/report"), accept="text/html"))).text
+
+    async def fixed(self, validation: Validation | str) -> bytes:
+        return (
+            await self._send(_Call("GET", self._path(self._id(validation), "/fixed"), accept="application/xml"))
+        ).content
 
     async def share(self, validations: Sequence[Validation | str]) -> ReportLink:
         body = {"validations": [self._id(validation) for validation in validations]}

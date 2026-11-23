@@ -85,7 +85,8 @@ class InvalidRequestError(ApiError):
 
 
 class QuotaExceededError(ApiError):
-    """429: this month's validations are used up."""
+    """429: this month's validations are used up (``quota_exceeded``), or with a test key today's
+    (``test_quota_exceeded``)."""
 
 
 class RateLimitedError(ApiError):

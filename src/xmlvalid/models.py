@@ -11,6 +11,10 @@ __all__ = [
     "Diagnostic",
     "Engine",
     "Event",
+    "Fix",
+    "FixAsk",
+    "FixChange",
+    "FixProblem",
     "ReportLink",
     "Result",
     "RuleSet",
@@ -203,6 +207,99 @@ class ArchiveItem:
 
 
 @dataclass(frozen=True)
+class FixChange:
+    """One change ``fix=True`` made, in English."""
+
+    rule: str | None
+    """The rule it answers (BR-CL-04); None for a schema error."""
+    text: str
+    """cbc:DocumentCurrencyCode was eur: EUR"""
+
+    def __str__(self) -> str:
+        return f"[{self.rule}] {self.text}" if self.rule else self.text
+
+
+@dataclass(frozen=True)
+class FixAsk:
+    """A fix that needs a value: answer it in ``fix_values`` by its ``key``."""
+
+    key: str
+    """buyer-reference, endpoint:buyer, billing-mode, unit:Stk, contact:email"""
+    rule: str | None
+    label: str
+    """Buyer reference (BT-10)"""
+    kind: str
+    """text, unit, billing-mode, endpoint, email or phone."""
+    answered: bool
+    hint: str | None = None
+    suggested: str | None = None
+    """A value read from the document, when there is one."""
+    options: list[str] = field(default_factory=list)
+    """The codes to choose from (units, billing modes)."""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FixAsk:
+        options = data.get("options")
+        return cls(
+            key=_str(data, "key"),
+            rule=_opt_str(data, "rule"),
+            label=_str(data, "label"),
+            kind=_str(data, "kind", "text"),
+            answered=_bool(data, "answered"),
+            hint=_opt_str(data, "hint"),
+            suggested=_opt_str(data, "suggested"),
+            options=[item for item in options if isinstance(item, str)] if isinstance(options, list) else [],
+        )
+
+
+@dataclass(frozen=True)
+class FixProblem:
+    """A value sent in ``fix_values`` that was refused, and why."""
+
+    key: str
+    text: str
+
+
+@dataclass(frozen=True)
+class Fix:
+    """What ``fix=True`` did (Pro): the changes, the values it still needs, and the fixed document checked again."""
+
+    FIXED = "fixed"
+
+    status: str
+    """fixed (:meth:`Client.fixed` downloads the document), unchanged, unsupported, too_large or failed."""
+    reason: str | None
+    """Why nothing was fixed."""
+    changes: list[FixChange]
+    asks: list[FixAsk]
+    problems: list[FixProblem]
+    result: Result | None
+    """The fixed document checked again (at most 20 errors and 20 warnings listed); None when nothing was fixed."""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> Fix | None:
+        if data is None:
+            return None
+        result = _object(data, "result")
+        return cls(
+            status=_str(data, "status"),
+            reason=_opt_str(data, "reason"),
+            changes=[
+                FixChange(rule=_opt_str(item, "rule"), text=_str(item, "text")) for item in _objects(data, "changes")
+            ],
+            asks=[FixAsk.from_dict(item) for item in _objects(data, "asks")],
+            problems=[
+                FixProblem(key=_str(item, "key"), text=_str(item, "text")) for item in _objects(data, "problems")
+            ],
+            result=Result.from_dict(result) if result is not None else None,
+        )
+
+    @property
+    def is_fixed(self) -> bool:
+        return self.status == self.FIXED
+
+
+@dataclass(frozen=True)
 class Result:
     """What a finished validation found."""
 
@@ -230,6 +327,8 @@ class Result:
     """SHA-256 of the file as sent (the PDF, the archive), in hex."""
     engine: Engine | None = None
     """What checked it: the libxml2 and, when business rules ran, the SaxonJS."""
+    fix: Fix | None = None
+    """What ``fix=True`` did; None without it."""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Result:
@@ -248,6 +347,7 @@ class Result:
             items=[ArchiveItem.from_dict(item) for item in _objects(data, "items")],
             sha256=_opt_str(data, "sha256"),
             engine=Engine.from_dict(_object(data, "engine")),
+            fix=Fix.from_dict(_object(data, "fix")),
         )
 
     @property
@@ -283,6 +383,10 @@ class Validation:
     """The result as an HTML page, once finished (needs the API key)."""
     rule_sets: list[RuleSet] = field(default_factory=list)
     """The business rules the schema runs, with their releases (empty without any)."""
+    test: bool = False
+    """Made with a test key (xv_test_…), outside the monthly quota."""
+    fixed_url: str | None = None
+    """The fixed document of a run with ``fix=True`` that fixed it; :meth:`Client.fixed` downloads it."""
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -300,6 +404,8 @@ class Validation:
             error=_opt_str(data, "error"),
             report_url=_opt_str(_object(data, "links") or {}, "report"),
             rule_sets=_rule_sets(data),
+            test=_bool(data, "test"),
+            fixed_url=_opt_str(_object(data, "links") or {}, "fixed"),
             raw=data,
         )
 
@@ -326,7 +432,7 @@ class Validation:
 
 @dataclass(frozen=True)
 class Usage:
-    """This month's validations and the plan's limits."""
+    """This month's validations, today's test key validations and the plan's limits."""
 
     plan: str
     """free or pro."""
@@ -337,11 +443,16 @@ class Usage:
     limit: int
     max_file_bytes: int
     requests_per_minute: int
+    test_used: int = 0
+    """Validations made today (UTC) with test keys, counted apart from the month's."""
+    test_limit: int = 0
+    test_reset_at: datetime | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Usage:
         period = _object(data, "period") or {}
         validations = _object(data, "validations") or {}
+        test = _object(data, "test_validations") or {}
         limits = _object(data, "limits") or {}
         return cls(
             plan=_str(data, "plan"),
@@ -351,6 +462,9 @@ class Usage:
             limit=_int(validations, "limit"),
             max_file_bytes=_int(limits, "max_file_bytes"),
             requests_per_minute=_int(limits, "requests_per_minute"),
+            test_used=_int(test, "used"),
+            test_limit=_int(test, "limit"),
+            test_reset_at=_date(test, "reset_at"),
         )
 
     @property
@@ -363,7 +477,7 @@ class Schema:
     """A schema to validate against: one of the account's saved schemas or a catalog entry."""
 
     schema: str
-    """The value to pass as schema: a catalog slug (peppol-bis-3-invoice) or a saved schema (my-12)."""
+    """The value to pass as schema: a catalog slug (peppol-bis-3-invoice) or a saved schema (@orders-v3)."""
     name: str
     kind: str
     """xsd, dtd, rng or rnc."""

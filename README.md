@@ -51,7 +51,7 @@ The schema:
 |---|---|
 | `schema="peppol-bis-3-invoice"` | A [catalog](https://xmlvalid.com/schemas) entry, with its business rules |
 | `schema="auto"` | The catalog profile an e-invoice names (BT-24), for mixed invoices |
-| `schema="my-12"` | One of your saved schemas |
+| `schema="@orders-v3"` | One of your saved schemas |
 | `schema_file="order.xsd"` | An XSD, DTD or RelaxNG file sent with the document |
 | `doctype=True` | The DOCTYPE the document declares |
 | none | Well-formedness only |
