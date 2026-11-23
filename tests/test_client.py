@@ -51,7 +51,7 @@ def test_a_file_is_sent_as_the_body(client: Client, api: Api) -> None:
     )
     assert request.headers["Authorization"] == "Bearer xv_test"
     assert request.headers["Content-Type"] == "application/xml"
-    assert request.headers["User-Agent"].startswith("xmlvalid-python/1.3.0 Python/")
+    assert request.headers["User-Agent"].startswith("xmlvalid-python/1.4.0 Python/")
     assert api.bodies[0] == (FIXTURES / "invoice.xml").read_bytes()
     assert result.id == "val_1"
     assert result.report_url == "https://xmlvalid.com/api/v1/validations/val_1/report"
@@ -438,3 +438,32 @@ def test_the_key_and_the_document_are_checked(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(ValueError, match="one of document"):
         client.validate(text="<a/>", url="https://example.com/a.xml")
     client.close()
+
+
+def test_create_invoice_posts_json_and_downloads_what_was_written(client: Client, api: Api) -> None:
+    body = validation()
+    body["document"] = {"source": "invoice", "name": "RE-1.pdf", "size": 3}
+    body["invoice"] = {"schema": "factur-x-en16931", "profile": "zugferd", "syntax": "cii", "format": "pdf",
+                       "totals": {"payable": "119.00"}, "ignored": ["colour"]}  # fmt: skip
+    body["links"]["document"] = "https://xmlvalid.com/api/v1/validations/val_1/document"
+    api.json(200, body)
+    api.raw(200, "%PDF", {"Content-Type": "application/pdf"})
+
+    invoice = {"profile": "zugferd", "lines": [{"name": "x", "price": 100, "rate": 19}]}
+    result = client.create_invoice(invoice, format="pdf", rules_version="factur-x-en16931@1.09.2")
+    pdf = client.invoice_document(result)
+
+    sent = json.loads(api.requests[0].content)
+    assert api.requests[0].method == "POST"
+    assert str(api.requests[0].url) == "https://xmlvalid.com/api/v1/invoices"
+    assert sent["format"] == "pdf" and sent["rules_version"] == ["factur-x-en16931@1.09.2"]
+    assert sent["invoice"]["lines"][0]["price"] == 100
+    assert str(api.requests[1].url) == "https://xmlvalid.com/api/v1/validations/val_1/document"
+    assert pdf == b"%PDF"
+    assert result.invoice is not None and result.invoice["ignored"] == ["colour"]
+    assert result.document_url == "https://xmlvalid.com/api/v1/validations/val_1/document"
+
+
+def test_create_invoice_refuses_an_unknown_format(client: Client) -> None:
+    with pytest.raises(ValueError):
+        client.create_invoice({"profile": "peppol", "lines": []}, format="docx")

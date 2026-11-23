@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0
+
+- `create_invoice()` (sync and async): an e-invoice written from JSON (XRechnung, Peppol BIS,
+  ZUGFeRD / Factur-X, France CTC; `format="pdf"` for a PDF with the XML inside) and checked
+  against its profile's rules; `Validation.invoice` says what was written, `invoice_document()`
+  downloads it.
+
 ## 1.3.0
 
 - `fix=True` and `fix_values=` on `validate()` and `submit()` (Pro): the invoice fixed as the

@@ -142,6 +142,18 @@ class _BaseClient:
             "User-Agent": f"xmlvalid-python/{__version__} Python/{platform.python_version()}",
         }
 
+    @staticmethod
+    def _invoice_call(
+        invoice: Mapping[str, Any], format: str, rules_version: str | Sequence[str] | None, wait: int
+    ) -> _Call:
+        if format not in ("xml", "pdf"):
+            raise ValueError('format is "xml" or "pdf".')
+        pins = [rules_version] if isinstance(rules_version, str) else list(rules_version or [])
+        body: dict[str, Any] = {"invoice": dict(invoice), "format": format, "wait": wait}
+        if pins:
+            body["rules_version"] = pins
+        return _Call("POST", "/invoices", json=body)
+
     def _submit_call(
         self,
         document: _Document,
@@ -471,6 +483,50 @@ class Client(_BaseClient):
         """
         return self._send(_Call("GET", self._path(self._id(validation), "/fixed"), accept="application/xml")).content
 
+    def create_invoice(
+        self,
+        invoice: Mapping[str, Any],
+        *,
+        format: str = "xml",
+        rules_version: str | Sequence[str] | None = None,
+        timeout: float | None = None,
+    ) -> Validation:
+        """Writes an e-invoice from JSON and checks it against its profile's rules.
+
+        ::
+
+            written = xmlvalid.create_invoice({
+                "profile": "xrechnung",
+                "number": "RE-2026-0042",
+                "buyerReference": "04011000-12345-03",
+                "seller": {...},
+                "buyer": {...},
+                "lines": [{"name": "Consulting", "quantity": 10, "unit": "HUR", "price": 95, "rate": 19}],
+            })
+            written.invoice["totals"]["payable"]
+            xml = xmlvalid.invoice_document(written)
+
+        :param invoice: The e-invoice generator's fields (https://xmlvalid.com/docs/api#invoices): ``profile``
+            (xrechnung, peppol, zugferd, france) and ``lines``, then whatever the invoice needs
+        :param format: "xml", or "pdf" for a ZUGFeRD / Factur-X PDF with the XML inside (not Peppol BIS)
+        :param rules_version: Rule set releases to pin, as for :meth:`validate`
+        :param timeout: Seconds to wait in all (default: the client's)
+        :raises ValidationTimeoutError: when it is still running after ``timeout``
+        """
+        timeout = self._timeout if timeout is None else timeout
+        deadline = time.monotonic() + timeout
+        call = self._invoice_call(invoice, format, rules_version, int(min(self._wait, max(0, timeout))))
+        validation = Validation.from_dict(self._decode(self._send(call)))
+        return self.wait_for(validation, timeout=max(0.0, deadline - time.monotonic()))
+
+    def invoice_document(self, validation: Validation | str) -> bytes:
+        """The invoice :meth:`create_invoice` wrote, XML or PDF, for as long as its result is kept.
+
+        :raises NotFoundError: when the validation wrote none (``no_document``) or expired
+        """
+        accept = "application/xml, application/pdf"
+        return self._send(_Call("GET", self._path(self._id(validation), "/document"), accept=accept)).content
+
     def share(self, validations: Sequence[Validation | str]) -> ReportLink:
         """A public link to the report of one or more validations, for 30 days (Pro)."""
         body = {"validations": [self._id(validation) for validation in validations]}
@@ -643,6 +699,25 @@ class AsyncClient(_BaseClient):
         return (
             await self._send(_Call("GET", self._path(self._id(validation), "/fixed"), accept="application/xml"))
         ).content
+
+    async def create_invoice(
+        self,
+        invoice: Mapping[str, Any],
+        *,
+        format: str = "xml",
+        rules_version: str | Sequence[str] | None = None,
+        timeout: float | None = None,
+    ) -> Validation:
+        """Writes an e-invoice from JSON and checks it; see :meth:`Client.create_invoice`."""
+        timeout = self._timeout if timeout is None else timeout
+        deadline = time.monotonic() + timeout
+        call = self._invoice_call(invoice, format, rules_version, int(min(self._wait, max(0, timeout))))
+        validation = Validation.from_dict(self._decode(await self._send(call)))
+        return await self.wait_for(validation, timeout=max(0.0, deadline - time.monotonic()))
+
+    async def invoice_document(self, validation: Validation | str) -> bytes:
+        accept = "application/xml, application/pdf"
+        return (await self._send(_Call("GET", self._path(self._id(validation), "/document"), accept=accept))).content
 
     async def share(self, validations: Sequence[Validation | str]) -> ReportLink:
         body = {"validations": [self._id(validation) for validation in validations]}

@@ -387,6 +387,11 @@ class Validation:
     """Made with a test key (xv_test_…), outside the monthly quota."""
     fixed_url: str | None = None
     """The fixed document of a run with ``fix=True`` that fixed it; :meth:`Client.fixed` downloads it."""
+    invoice: dict[str, Any] | None = None
+    """:meth:`Client.create_invoice` only: what was written (schema, profile, syntax, number, format, totals,
+    and ``ignored``, the fields sent that an invoice has no place for); None until it is."""
+    document_url: str | None = None
+    """The invoice :meth:`Client.create_invoice` wrote; :meth:`Client.invoice_document` downloads it."""
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -406,6 +411,8 @@ class Validation:
             rule_sets=_rule_sets(data),
             test=_bool(data, "test"),
             fixed_url=_opt_str(_object(data, "links") or {}, "fixed"),
+            invoice=_object(data, "invoice"),
+            document_url=_opt_str(_object(data, "links") or {}, "document"),
             raw=data,
         )
 
